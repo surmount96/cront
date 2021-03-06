@@ -1,0 +1,66 @@
+ public function handle()
+    {
+        $day_short = idate('w');
+        $hour_24 = idate('H');
+        if(self::ACTIVE && in_array($day_short,self::RUN_DAYS,true) && in_array($hour_24,self::RUN_HOURS,true) ) {
+            
+            try {
+                $activeUsers = DB::connection('mysql::read')
+                    ->table('user_programs')->where('progress','>' ,0)
+                    ->leftjoin('course_completions','course_completions.learner_id','user_programs.user_id')
+                    ->whereNull('course_completions.course_id')
+                    ->take(self::LIMIT)
+                    ->get();
+                $key = handleCacheKeys(__CLASS__.__FUNCTION__."total-course-uploaded");
+                $courses = Cache::remember($key,3600,function () {
+                return DB::connection('mysql::read')
+                    ->table('courses')->where('course_state','published')
+                    ->get()
+                    ->pluck('id');
+                });
+
+                foreach($activeUsers as $active) {
+                    
+                    foreach($courses as $course) {
+                        $lessons = DB::connection('mysql::read')->table('lessons')->where('course_id',$course)
+                            ->pluck('id')
+                            ->count();
+                        $usersCompletedCourse = DB::connection('mysql::read')
+                            ->table('user_course_statuses')
+                            ->where('learner_id',$active->user_id)
+                            ->where('course_id',$course)
+                            ->pluck('learner_id')
+                            ->count();
+                        if($usersCompletedCourse === $lessons){
+                            //log an entry
+                            $latestEntry = DB::connection('mysql::read')
+                            ->table('user_course_statuses')->where('learner_id',$active->user_id)
+                            ->where('course_id',$course)
+                            ->orderBy('updated_at','desc')
+                            ->first();
+                            // if(!empty($latestEntry)){
+                                // Mail::send([], [], function ($message) {
+                                //     $message->to('ayanwoye74@gmail.com')
+                                //       ->subject('Cron RUN SUCCESSFUL')
+                                //       ->setBody('Hi, Hvae started running'); 
+                                //   });
+                                CourseCompletion::on('mysql::write')->updateOrCreate([
+                                    'course_id' => $course,
+                                    'learner_id' => $latestEntry->learner_id,
+                                ],[
+                                    'tenant_id' => $latestEntry->tenant_id,
+                                    'learner_id' => $latestEntry->learner_id,
+                                    'course_id' => $course,
+                                    'completion_date' => $latestEntry->updated_at,
+                                ]);
+                            // }
+                        }
+                    }
+                }
+            } catch(\Exception $e) {
+                throw new Exception($e->getMessage());
+            }
+               
+            
+        }
+    }
